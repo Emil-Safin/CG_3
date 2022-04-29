@@ -9,12 +9,19 @@
 #include "GL/freeglut.h";
 #include <Magick++.h>;
 #include <string>;
+#define M_PI 3.14159265358979323846
+#define ToRadian(x) ((x) * M_PI / 180.0f)
+#define ToDegree(x) ((x) * 180.0f / M_PI)
+
 
 GLuint VBO;
 GLuint IBO;
-
-
+glm::fmat4* m_transformation = new glm::fmat4();
 GLuint gWVPLocation;
+GLuint m_dirLightColorLocation;
+GLuint m_dirLightAmbientIntensityLocation;
+GLuint gSampler;
+
 class Texture
 {
 public:
@@ -58,9 +65,6 @@ private:
 	Magick::Blob m_blob;
 };
 Texture* pTexture = NULL;
-GLuint gSampler;
-
-
 
 struct Vertex
 {
@@ -76,21 +80,6 @@ struct Vertex
 	}
 };
 
-
-/*static const char* pVS = "                                                          \n\
-#version 330                                                                        \n\
-																					\n\
-layout (location = 0) in vec3 Position;                                             \n\
-																					\n\
-uniform mat4 gWorld;                                                                \n\
-																					\n\
-out vec4 Color;                                                                     \n\
-																					\n\
-void main()                                                                         \n\
-{                                                                                   \n\
-	gl_Position = gWorld * vec4(Position, 1.0);                                     \n\
-	Color = vec4(1.0, 1.0, 1.0, 1.0);												\n\
-}";*/
 
 static const char* pVS = "                                                          \n\
 #version 330                                                                        \n\
@@ -120,22 +109,7 @@ void main()																			\n\
 	FragColor = texture2D(gSampler, TexCoord0.st);									\n\
 };";
 
-/*static const char* pFS = "                                                          \n\
-#version 330                                                                        \n\
-																					\n\
-in vec4 Color;                                                                      \n\
-																					\n\
-out vec4 FragColor;                                                                 \n\
-																					\n\
-void main()                                                                         \n\
-{                                                                                   \n\
-	FragColor = Color;                                                              \n\
-}";*/
-
-float Scale = 0.0f;
-#define M_PI 3.14159265358979323846
-#define ToRadian(x) ((x) * M_PI / 180.0f)
-#define ToDegree(x) ((x) * 180.0f / M_PI)
+//float Scale = 0.0f;
 void InitPers(glm::fmat4& m, float zNear, float zFar, float width, float height, float fov) {
 	const float ar = width / height;
 	const float zRange = zNear - zFar;
@@ -160,64 +134,79 @@ void InitPers(glm::fmat4& m, float zNear, float zFar, float width, float height,
 	m[3][1] = 0.0f;
 	m[3][2] = 1.0f;
 	m[3][3] = 0.0f;
-
+	m = glm::transpose(m);
+}
+struct DirectionalLight {
+	glm::fvec3 Color;
+	float AmbientIntensity;
+};
+void Translate(glm::fmat4& WorldPos, GLfloat x, GLfloat y, GLfloat z) {
+	WorldPos[0][0] = 1.0f; WorldPos[0][1] = 0.0f; WorldPos[0][2] = 0.0f; WorldPos[0][3] = x;
+	WorldPos[1][0] = 0.0f; WorldPos[1][1] = 1.0f; WorldPos[1][2] = 0.0f; WorldPos[1][3] = y;
+	WorldPos[2][0] = 0.0f; WorldPos[2][1] = 0.0f; WorldPos[2][2] = 1.0f; WorldPos[2][3] = z;
+	WorldPos[3][0] = 0.0f; WorldPos[3][1] = 0.0f; WorldPos[3][2] = 0.0f; WorldPos[3][3] = 1.0f;
+	WorldPos = glm::transpose(WorldPos);
+}
+void RotateY(glm::fmat4& WorldRot, GLfloat y) {
+	WorldRot[0][0] = cosf(ToRadian(y));	WorldRot[0][1] = 0.0f;	WorldRot[0][2] = -sinf(ToRadian(y));	WorldRot[0][3] = 0.0f;
+	WorldRot[1][0] = 0.0f;				WorldRot[1][1] = 1.0f;	WorldRot[1][2] = 0.0f;					WorldRot[1][3] = 0.0f;
+	WorldRot[2][0] = sinf(ToRadian(y)); WorldRot[2][1] = 0.0f;  WorldRot[2][2] = cosf(ToRadian(y));		WorldRot[2][3] = 0.0f;
+	WorldRot[3][0] = 0.0f;				WorldRot[3][1] = 0.0f;  WorldRot[3][2] = 0.0f;					WorldRot[3][3] = 1.0f;
+	WorldRot = glm::transpose(WorldRot);
+}
+void Rotate(glm::fmat4& WorldRot, GLfloat _x, GLfloat _y, GLfloat _z) {
+	glm::fmat4 rx, ry, rz;
+	const float x = ToRadian(_x);
+	const float y = ToRadian(_y);
+	const float z = ToRadian(_z);
+	rx[0][0] = 1.0f;	rx[0][1] = 0.0f;	rx[0][2] = 0.0f;	rx[0][3] = 0.0f;
+	rx[1][0] = 0.0f;	rx[1][1] = cosf(x);	rx[1][2] = -sinf(x); rx[1][3] = 0.0f;
+	rx[2][0] = 0.0f;	rx[2][1] = sinf(x);	rx[2][2] = cosf(x);	rx[2][3] = 0.0f;
+	rx[3][0] = 0.0f;	rx[3][1] = 0.0f;	rx[3][2] = 0.0f;	rx[3][3] = 1.0f;
+	ry[0][0] = cosf(y); ry[0][1] = 0.0f;	ry[0][2] = -sinf(y); ry[0][3] = 0.0f;
+	ry[1][0] = 0.0f;	ry[1][1] = 1.0f;	ry[1][2] = 0.0f;	ry[1][3] = 0.0f;
+	ry[2][0] = sinf(y); ry[2][1] = 0.0f;	ry[2][2] = cosf(y);	ry[2][3] = 0.0f;
+	ry[3][0] = 0.0f;	ry[3][1] = 0.0f;	ry[3][2] = 0.0f;	ry[3][3] = 1.0f;
+	rz[0][0] = cosf(z); rz[0][1] = -sinf(z); rz[0][2] = 0.0f;	rz[0][3] = 0.0f;
+	rz[1][0] = sinf(z); rz[1][1] = cosf(z); rz[1][2] = 0.0f;	rz[1][3] = 0.0f;
+	rz[2][0] = 0.0f;	rz[2][1] = 0.0f;	rz[2][2] = 1.0f;	rz[2][3] = 0.0f;
+	rz[3][0] = 0.0f;	rz[3][1] = 0.0f;	rz[3][2] = 0.0f;	rz[3][3] = 1.0f;
+	WorldRot = glm::transpose(rz * ry * rx);
+}
+void Scale(glm::fmat4& WorldScl, GLfloat x, GLfloat y, GLfloat z) {
+	WorldScl[0][0] = x;		WorldScl[0][1] = 0.0f;	WorldScl[0][2] = 0.0f;	WorldScl[0][3] = 0.0f;
+	WorldScl[1][0] = 0.0f;	WorldScl[1][1] = y;		WorldScl[1][2] = 0.0f;	WorldScl[1][3] = 0.0f;
+	WorldScl[2][0] = 0.0f;	WorldScl[2][1] = 0.0f;	WorldScl[2][2] = z;		WorldScl[2][3] = 0.0f;
+	WorldScl[3][0] = 0.0f;	WorldScl[3][1] = 0.0f;	WorldScl[3][2] = 0.0f;	WorldScl[3][3] = 1.0f;
 }
 void RenderSceneCB() {
 	glClear(GL_COLOR_BUFFER_BIT);
-	Vertex Vertices[4] = {
-		Vertex(glm::fvec3(-1.0f, -1.0f, 0.5773f), glm::fvec2(0.0f, 0.0f)),
-		Vertex(glm::fvec3(0.0f, -1.0f, -1.15475), glm::fvec2(0.5f, 0.0f)),
-		Vertex(glm::fvec3(1.0f, -1.0f, 0.5773f),  glm::fvec2(1.0f, 0.0f)),
-		Vertex(glm::fvec3(0.0f, 1.0f, 0.0f),      glm::fvec2(0.5f, 1.0f))
-	};
-	glGenBuffers(1, &VBO);
-	glBindBuffer(GL_ARRAY_BUFFER, VBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertices), Vertices, GL_STATIC_DRAW);
-
-	unsigned int Indices[] = { 0, 3, 1,
-							  1, 3, 2,
-							  2, 3, 0,
-							  0, 2, 1 };
-
-	glGenBuffers(1, &IBO);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IBO);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(Indices), Indices, GL_STATIC_DRAW);
-
-	Scale += 0.001f;
-	glm::fmat4 WorldPos;
-	WorldPos[0][0] = 1.0f; WorldPos[0][1] = 0.0f; WorldPos[0][2] = 0.0f; WorldPos[0][3] = 0.0f;//sinf(ToRadian(Scale));
-	WorldPos[1][0] = 0.0f; WorldPos[1][1] = 1.0f; WorldPos[1][2] = 0.0f; WorldPos[1][3] = 0.0f;
-	WorldPos[2][0] = 0.0f; WorldPos[2][1] = 0.0f; WorldPos[2][2] = 1.0f; WorldPos[2][3] = 5.0f;
-	WorldPos[3][0] = 0.0f; WorldPos[3][1] = 0.0f; WorldPos[3][2] = 0.0f; WorldPos[3][3] = 1.0f;
-	glm::fmat4 WorldRot;
-	WorldRot[0][0] = cosf(ToRadian(Scale));		   WorldRot[0][1] = 0.0f;		  WorldRot[0][2] = -sinf(ToRadian(Scale));  WorldRot[0][3] = 0.0f;
-	WorldRot[1][0] = 0.0f;						   WorldRot[1][1] = 1.0f;		  WorldRot[1][2] = 0.0f;					WorldRot[1][3] = 0.0f;
-	WorldRot[2][0] = sinf(ToRadian(Scale));        WorldRot[2][1] = 0.0f;         WorldRot[2][2] = cosf(ToRadian(Scale));   WorldRot[2][3] = 0.0f;
-	WorldRot[3][0] = 0.0f;						   WorldRot[3][1] = 0.0f;         WorldRot[3][2] = 0.0f;					WorldRot[3][3] = 1.0f;
+	static float rotate = 0.0f;
+	rotate += 0.01f;
 	glm::fmat4 WorldScl;
-	WorldScl[0][0] = 1.0f;		  WorldScl[0][1] = 0.0f;        WorldScl[0][2] = 0.0f;        WorldScl[0][3] = 0.0f;
-	WorldScl[1][0] = 0.0f;        WorldScl[1][1] = 1.0f;		WorldScl[1][2] = 0.0f;        WorldScl[1][3] = 0.0f;
-	WorldScl[2][0] = 0.0f;        WorldScl[2][1] = 0.0f;        WorldScl[2][2] = 1.0f;		  WorldScl[2][3] = 0.0f;
-	WorldScl[3][0] = 0.0f;        WorldScl[3][1] = 0.0f;        WorldScl[3][2] = 0.0f;        WorldScl[3][3] = 1.0f;
+	glm::fmat4 WorldRot;
+	glm::fmat4 WorldPos;
 	glm::fmat4 WorldPers;
+	Scale(WorldScl, 1.0f, 1.0f, 1.0f);
+	RotateY(WorldRot, rotate);
+	Translate(WorldPos, 0, 0, 5.0f);
 	InitPers(WorldPers, 1.0f, 100.0f, 1024, 768, 30);
-	glm::fmat4* m_transformation = new glm::fmat4(glm::transpose(glm::transpose(WorldPers) * glm::transpose(WorldPos) * glm::transpose(WorldRot) * glm::transpose(WorldScl)));
-
+	*m_transformation = glm::transpose(WorldPers * WorldPos * WorldRot * WorldScl);
 	glUniformMatrix4fv(gWVPLocation, 1, GL_TRUE, (const GLfloat*)m_transformation);
-
+	DirectionalLight Light;
+	Light.Color = glm::vec3(1.0f, 1.0f, 1.0f);
+	Light.AmbientIntensity = 1.0f;
+	glUniform3f(m_dirLightColorLocation, Light.Color.x, Light.Color.y, Light.Color.z);
+	glUniform1f(m_dirLightAmbientIntensityLocation, Light.AmbientIntensity);
 	glEnableVertexAttribArray(0);
 	glEnableVertexAttribArray(1);
 	glBindBuffer(GL_ARRAY_BUFFER, VBO);
-	//glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), 0);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)12);
 	pTexture->Bind(GL_TEXTURE0);
-
 	glDrawElements(GL_TRIANGLES, 12, GL_UNSIGNED_INT, 0);
-
 	glDisableVertexAttribArray(0);
 	glDisableVertexAttribArray(1);
-
 	glutSwapBuffers();
 }
 
@@ -283,6 +272,10 @@ static void CompileShaders() {
 	assert(gWVPLocation != 0xFFFFFFFF);
 	gSampler = glGetUniformLocation(ShaderProgram, "gSampler");
 	assert(gSampler != 0xFFFFFFFF);
+	m_dirLightColorLocation = glGetUniformLocation(ShaderProgram, "gDirectionalLight.Color");
+	assert(m_dirLightColorLocation != 0xFFFFFFFF);
+	m_dirLightAmbientIntensityLocation = glGetUniformLocation(ShaderProgram, "gDirectionalLight.AmbientIntensity");
+	assert(m_dirLightAmbientIntensityLocation != 0xFFFFFFFF);
 }
 int main(int argc, char** argv) {
 	Magick::InitializeMagick(*argv);
@@ -290,7 +283,7 @@ int main(int argc, char** argv) {
 	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
 	glutInitWindowSize(1024, 768);
 	glutInitWindowPosition(100, 100);
-	glutCreateWindow("Tutorial 16");
+	glutCreateWindow("Step 17");
 	glutDisplayFunc(RenderSceneCB);
 	glutIdleFunc(RenderSceneCB);
 
@@ -304,10 +297,28 @@ int main(int argc, char** argv) {
 	glCullFace(GL_BACK);
 	glEnable(GL_CULL_FACE);
 
+	Vertex Vertices[4] = {
+		Vertex(glm::fvec3(-1.0f, -1.0f, 0.5773f), glm::fvec2(0.0f, 0.0f)),
+		Vertex(glm::fvec3(0.0f, -1.0f, -1.15475), glm::fvec2(0.5f, 0.0f)),
+		Vertex(glm::fvec3(1.0f, -1.0f, 0.5773f),  glm::fvec2(1.0f, 0.0f)),
+		Vertex(glm::fvec3(0.0f, 1.0f, 0.0f),      glm::fvec2(0.5f, 1.0f))
+	};
+	glGenBuffers(1, &VBO);
+	glBindBuffer(GL_ARRAY_BUFFER, VBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertices), Vertices, GL_STATIC_DRAW);
+
+	unsigned int Indices[] = { 0, 3, 1,
+							   1, 3, 2,
+							   2, 3, 0,
+							   1, 2, 0 };
+	glGenBuffers(1, &IBO);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IBO);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(Indices), Indices, GL_STATIC_DRAW);
+
 	CompileShaders();
 	glUniform1i(gSampler, 0);
 
-	pTexture = new Texture(GL_TEXTURE_2D, "C:\\test.png");
+	pTexture = new Texture(GL_TEXTURE_2D, "C:\\test1.jpg");
 
 	if (!pTexture->Load()) {
 		return 1;
