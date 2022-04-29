@@ -75,6 +75,34 @@ struct Vertex
 
 	}
 };
+
+struct {
+	glm::fvec3 Pos;
+	glm::fvec3 Target;
+	glm::fvec3 Up;
+} m_camera;
+
+void SetCamera(const glm::fvec3& Pos, const glm::fvec3& Target, const glm::fvec3& Up) {
+	m_camera.Pos = Pos;
+	m_camera.Target = Target;
+	m_camera.Up = Up;
+}
+void CameraTransform(const glm::fvec3& Target, const glm::fvec3& Up, glm::fmat4& m) {
+	glm::fvec3 N = Target;
+	N = glm::normalize(N);
+	//N.Normalize();
+	glm::fvec3 U = Up;
+	U = glm::normalize(U);
+	//U.Normalize();
+	U = cross(U, Target);
+	glm::fvec3 V = cross(N, U);
+
+	m[0][0] = U.x; m[0][1] = U.y; m[0][2] = U.z; m[0][3] = 0.0f;
+	m[1][0] = V.x; m[1][1] = V.y; m[1][2] = V.z; m[1][3] = 0.0f;
+	m[2][0] = N.x; m[2][1] = N.y; m[2][2] = N.z; m[2][3] = 0.0f;
+	m[3][0] = 0.0f; m[3][1] = 0.0f; m[3][2] = 0.0f; m[3][3] = 1.0f;
+}
+
 GLuint VBO;
 GLuint IBO;
 GLuint gWVPLocation;
@@ -84,6 +112,9 @@ GLuint m_dirLightAmbientIntensityLocation;
 GLuint m_dirLightLocationDirection;
 GLuint m_dirLightLocationDiffuseIntensity;
 GLuint gSampler;
+GLuint m_eyeWorldPosition;
+GLuint m_matSpecularIntensityLocation;
+GLuint m_matSpecularPowerLocation;
 glm::fmat4* m_transformation = new glm::fmat4();
 glm::fmat4* World = new glm::fmat4();
 
@@ -120,12 +151,14 @@ uniform mat4 gWorld;																\n\
 																					\n\
 out vec2 TexCoord0;																	\n\
 out vec3 Normal0;                                                                   \n\
+out vec3 WorldPos0;																	\n\
 																					\n\
 void main()																			\n\
 {																					\n\
 	gl_Position = gWVP * vec4(Position, 1.0);										\n\
 	TexCoord0 = TexCoord;															\n\
 	Normal0 = (gWorld * vec4(Normal, 0.0)).xyz;										\n\
+	WorldPos0   = (gWorld * vec4(Position, 1.0)).xyz;								\n\
 };";
 
 static const char* pFS = "                                                          \n\
@@ -133,6 +166,7 @@ static const char* pFS = "                                                      
 																					\n\
 in vec2 TexCoord0;																	\n\
 in vec3 Normal0;                                                                    \n\
+in vec3 WorldPos0;																	\n\
 																					\n\
 out vec4 FragColor;																	\n\
 struct DirectionalLight{															\n\
@@ -144,19 +178,35 @@ struct DirectionalLight{															\n\
 																					\n\
 uniform DirectionalLight gDirectionalLight;											\n\
 uniform sampler2D gSampler;															\n\
+                                                                                    \n\
+uniform vec3 gEyeWorldPos;                                                          \n\
+uniform float gMatSpecularIntensity;                                                \n\
+uniform float gSpecularPower;                                                       \n\
 																					\n\
 void main()																			\n\
 {																					\n\
 	vec4 AmbientColor = vec4(gDirectionalLight.Color, 1.0f) * gDirectionalLight.AmbientIntensity;	\n\
-	float DiffuseFactor = dot(normalize(Normal0), -gDirectionalLight.Direction);					\n\
-	vec4 DiffuseColor;																				\n\
+	vec3 LightDirection = -gDirectionalLight.Direction;												\n\
+	vec3 Normal = normalize(Normal0);																\n\
+	float DiffuseFactor = dot(Normal, LightDirection);												\n\
+	vec4 DiffuseColor  = vec4(0, 0, 0, 0);															\n\
+	vec4 SpecularColor = vec4(0, 0, 0, 0);															\n\
 	if(DiffuseFactor > 0){																			\n\
 		DiffuseColor = vec4(gDirectionalLight.Color, 1.0f) * gDirectionalLight.DiffuseIntensity *	\n\
 			DiffuseFactor;																			\n\
+		vec3 VertexToEye = normalize(gEyeWorldPos - WorldPos0);										\n\
+		vec3 LightReflect = normalize(reflect(gDirectionalLight.Direction, Normal));				\n\
+		float SpecularFactor = dot(VertexToEye, LightReflect);										\n\
+		SpecularFactor = pow(SpecularFactor, gSpecularPower);										\n\
+		if(SpecularFactor > 0){																		\n\
+			SpecularColor = vec4(gDirectionalLight.Color, 1.0f)										\n\
+				* gMatSpecularIntensity *															\n\
+				SpecularFactor;																		\n\
+		}																							\n\
 	} else{																							\n\
 		DiffuseColor = vec4(0, 0, 0, 0);															\n\
 	}																								\n\
-	FragColor = texture2D(gSampler, TexCoord0.xy)  * (AmbientColor + DiffuseColor);					\n\
+	FragColor = texture2D(gSampler, TexCoord0.xy)  * (AmbientColor + DiffuseColor + SpecularColor);	\n\
 };";
 
 
@@ -240,14 +290,19 @@ void RenderSceneCB() {
 	glm::fmat4 WorldRot;
 	glm::fmat4 WorldPos;
 	glm::fmat4 WorldPers;
+	glm::fmat4 CameraPos;
+	glm::fmat4 CameraRot;
 	Scale(WorldScl, 1.0f, 1.0f, 1.0f);
 	RotateY(WorldRot, rotate);
 	Translate(WorldPos, 0, 0, 5.0f);
 	InitPers(WorldPers, 1.0f, 100.0f, 1024, 768, 30);
 
-	*m_transformation = glm::transpose(WorldPers * WorldPos * WorldRot * WorldScl);
+	Translate(CameraPos, -m_camera.Pos.x, -m_camera.Pos.y, -m_camera.Pos.z);
+	CameraTransform(m_camera.Target, m_camera.Up, CameraRot);
 
 	*World = glm::transpose(WorldPos * WorldRot * WorldScl);
+	*m_transformation = glm::transpose(WorldPers * CameraRot * CameraPos * glm::transpose(*World));
+
 	glUniformMatrix4fv(gWVPLocation, 1, GL_TRUE, (const GLfloat*)m_transformation);
 	glUniformMatrix4fv(m_WorldMatrixLocation, 1, GL_TRUE, (const GLfloat*)World);
 
@@ -262,6 +317,12 @@ void RenderSceneCB() {
 	Direction = glm::normalize(Direction);
 	glUniform3f(m_dirLightLocationDirection, Direction.x, Direction.y, Direction.z);
 	glUniform1f(m_dirLightLocationDiffuseIntensity, Light.DiffuseIntensity);
+
+	float ReflectIntensity = 1.0f;
+	float ReflectPower = 32.0f;
+	glUniform1f(m_matSpecularIntensityLocation, ReflectIntensity);
+	glUniform1f(m_matSpecularPowerLocation, ReflectPower);
+	glUniform3f(m_eyeWorldPosition, m_camera.Pos.x, m_camera.Pos.y, m_camera.Pos.z);
 
 	glEnableVertexAttribArray(0);
 	glEnableVertexAttribArray(1);
@@ -351,6 +412,12 @@ static void CompileShaders() {
 	assert(m_dirLightLocationDirection != 0xFFFFFFFF);
 	m_dirLightLocationDiffuseIntensity = glGetUniformLocation(ShaderProgram, "gDirectionalLight.DiffuseIntensity");
 	assert(m_dirLightLocationDiffuseIntensity != 0xFFFFFFFF);
+	m_eyeWorldPosition = glGetUniformLocation(ShaderProgram, "gEyeWorldPos");
+	assert(m_eyeWorldPosition != 0xFFFFFFFF);
+	m_matSpecularIntensityLocation = glGetUniformLocation(ShaderProgram, "gMatSpecularIntensity");
+	assert(m_matSpecularIntensityLocation != 0xFFFFFFFF);
+	m_matSpecularPowerLocation = glGetUniformLocation(ShaderProgram, "gSpecularPower");
+	assert(m_matSpecularPowerLocation != 0xFFFFFFFF);
 }
 int main(int argc, char** argv) {
 	Magick::InitializeMagick(*argv);
@@ -393,6 +460,11 @@ int main(int argc, char** argv) {
 	glGenBuffers(1, &IBO);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(Indices), Indices, GL_STATIC_DRAW);
+
+	glm::fvec3 CameraPos(2.0f, 0.0f, 0.0f);
+	glm::fvec3 CameraTarget(0.45f, 0.0f, 1.0f);
+	glm::fvec3 CameraUp(0.0f, 1.0f, 0.0f);
+	SetCamera(CameraPos, CameraTarget, CameraUp);
 
 	CompileShaders();
 	glUniform1i(gSampler, 0);
